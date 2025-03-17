@@ -1,0 +1,161 @@
+call find_users_missing_authn_policies();
+
+CREATE OR REPLACE PROCEDURE find_users_missing_authn_policies()
+  RETURNS VARIANT NOT NULL
+  LANGUAGE JAVASCRIPT
+  EXECUTE AS CALLER
+  AS     
+  $$
+  let result = [];
+  let users = snowflake.execute({sqlText: "SHOW USERS"});
+  
+  // Collect user information
+  while (users.next()) {
+    let username = users.getColumnValue(1);
+    let hasPolicyRes = snowflake.execute({
+      sqlText: `SELECT TRUE 
+        FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(ref_entity_domain => 'USER', ref_entity_name => ?)) 
+        WHERE policy_kind = 'AUTHENTICATION_POLICY'`,
+      binds: [username],
+    });
+    
+    let hasPolicy = hasPolicyRes.next();
+    
+    // Get additional user details
+    let userDetails = snowflake.execute({
+      sqlText: `SELECT 
+                  name, 
+                  login_name, 
+                  display_name, 
+                  email, 
+                  default_role, 
+                  default_warehouse,
+                  disabled
+                FROM SNOWFLAKE.ACCOUNT_USAGE.USERS 
+                WHERE name = ?`,
+      binds: [username]
+    });
+    
+    let userInfo = {};
+    if (userDetails.next()) {
+      userInfo = {
+        username: userDetails.getColumnValue(1),
+        login_name: userDetails.getColumnValue(2),
+        display_name: userDetails.getColumnValue(3),
+        email: userDetails.getColumnValue(4),
+        default_role: userDetails.getColumnValue(5),
+        default_warehouse: userDetails.getColumnValue(6),
+        disabled: userDetails.getColumnValue(7),
+        has_authentication_policy: hasPolicy
+      };
+    } else {
+      userInfo = {
+        username: username,
+        has_authentication_policy: hasPolicy
+      };
+    }
+    
+    if (!hasPolicy) {
+      result.push(userInfo);
+    }
+  }
+  
+  // If no users are missing authentication policies
+  if (result.length === 0) {
+    return { status: "SUCCESS", message: "All users have authentication policies assigned", users: [] };
+  }
+  
+  return { 
+    status: "WARNING", 
+    message: `Found ${result.length} users missing authentication policies`, 
+    users: result 
+  };
+  $$;
+
+
+
+
+
+  call find_users_with_authn_policies();
+
+  CREATE OR REPLACE PROCEDURE find_users_with_authn_policies()
+  RETURNS VARIANT NOT NULL
+  LANGUAGE JAVASCRIPT
+  EXECUTE AS CALLER
+  AS     
+  $$
+  let result = [];
+  let users = snowflake.execute({sqlText: "SHOW USERS"});
+  
+  // Collect user information
+  while (users.next()) {
+    let username = users.getColumnValue(1);
+    let hasPolicyRes = snowflake.execute({
+      sqlText: `SELECT p.policy_name 
+        FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(ref_entity_domain => 'USER', ref_entity_name => ?)) p 
+        WHERE policy_kind = 'AUTHENTICATION_POLICY'`,
+      binds: [username],
+    });
+    
+    let policyName = null;
+    let hasPolicy = false;
+    
+    if (hasPolicyRes.next()) {
+      policyName = hasPolicyRes.getColumnValue(1);
+      hasPolicy = true;
+    }
+    
+    // Only proceed if user has a policy
+    if (hasPolicy) {
+      // Get additional user details
+      let userDetails = snowflake.execute({
+        sqlText: `SELECT 
+                    name, 
+                    login_name, 
+                    display_name, 
+                    email, 
+                    default_role, 
+                    default_warehouse,
+                    disabled
+                  FROM SNOWFLAKE.ACCOUNT_USAGE.USERS 
+                  WHERE name = ?`,
+        binds: [username]
+      });
+      
+      let userInfo = {};
+      if (userDetails.next()) {
+        userInfo = {
+          name: userDetails.getColumnValue(1),
+          login_name: userDetails.getColumnValue(2),
+          display_name: userDetails.getColumnValue(3),
+          email: userDetails.getColumnValue(4),
+          default_role: userDetails.getColumnValue(5),
+          default_warehouse: userDetails.getColumnValue(6),
+          disabled: userDetails.getColumnValue(7),
+          has_authentication_policy: true,
+          authentication_policy_name: policyName
+        };
+      } else {
+        userInfo = {
+          name: username,
+          login_name: username,
+          has_authentication_policy: true,
+          authentication_policy_name: policyName
+        };
+      }
+      
+      result.push(userInfo);
+    }
+  }
+  
+  // If no users have authentication policies
+  if (result.length === 0) {
+    return { status: "WARNING", message: "No users have authentication policies assigned", users: [] };
+  }
+  
+  return { 
+    status: "SUCCESS", 
+    message: `Found ${result.length} users with authentication policies`, 
+    users: result 
+  };
+  $$;
